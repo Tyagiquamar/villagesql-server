@@ -6649,6 +6649,11 @@ ulong ha_innobase::index_flags(uint key, uint, bool) const {
     return (0);
   }
 
+  auto *custom_context = table_share->key_info[key].custom_index_context;
+  if (custom_context != nullptr) {
+    return villagesql::innodb::Custom_index::flags(custom_context);
+  }
+
   ulong flags = HA_READ_NEXT | HA_READ_PREV | HA_READ_ORDER | HA_READ_RANGE |
                 HA_KEYREAD_ONLY | HA_DO_INDEX_COND_PUSHDOWN;
 

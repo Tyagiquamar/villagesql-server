@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "custom_column.h"
+#include "sql/handler.h"
 #include "storage/innobase/include/data0data.h"
 #include "storage/innobase/include/dict0dd.h"
 #include "storage/innobase/include/dict0dict.h"
@@ -379,6 +380,28 @@ bool Custom_index::is_custom(const dict_index_t *index) {
 
 const vef_type_index_intf_t &Custom_index::interface() const {
   return index_meta()->descriptor()->intf();
+}
+
+ulong Custom_index::flags(const IndexContext *meta) {
+  ut_a(meta != nullptr);
+  const vef_index_cap_t caps = meta->descriptor()->intf().capabilities;
+
+  // TODO(villagesql-indexing):
+  // 1. Custom index support:
+  //    A. Predicate push down: HA_DO_INDEX_COND_PUSHDOWN
+  //    B. For part key search: HA_ONLY_WHOLE_INDEX
+  //    C. For storing NULL: HA_TABLE_SCAN_ON_NULL
+  //    D. For row ID ordered scan: HA_KEY_SCAN_NOT_ROR
+  //    E. For covered scan: HA_KEYREAD_ONLY
+  ulong flags = HA_READ_NEXT | HA_ONLY_WHOLE_INDEX | HA_TABLE_SCAN_ON_NULL |
+                HA_KEY_SCAN_NOT_ROR;
+
+  if (caps & VEF_INDEX_CAP_RANGE_SCAN) flags |= HA_READ_RANGE;
+  if (caps & VEF_INDEX_CAP_REVERSE_SCAN) flags |= HA_READ_PREV;
+  if (caps & VEF_INDEX_CAP_ORDER_BY) flags |= HA_READ_ORDER;
+  if (caps & VEF_INDEX_CAP_KNN) flags |= HA_SUPPORT_KNN;
+
+  return flags;
 }
 
 dberr_t Custom_index::attach(dict_index_t *index, const IndexContext *meta,

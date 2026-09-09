@@ -67,6 +67,12 @@ class Custom_index {
   // Custom index extension interface.
   const vef_type_index_intf_t &interface() const;
 
+  // Maps the VEF_INDEX_CAP_* capabilities declared by meta's index type to the
+  // handler::index_flags() bitmask (HA_READ_*, HA_SUPPORT_KNN) the optimizer
+  // expects. Callable from a KEY's custom_index_context before any
+  // Custom_index instance exists for the index.
+  static ulong flags(const IndexContext *meta);
+
   // Get the index profile for key column type.
   const IndexProfileDescriptor *profile_for_key(uint32_t key_pos) const {
     ut_a(key_pos < key_profiles_.size());
