@@ -32,19 +32,20 @@
 //                   IndexTypeDesc::build() accepts a fully-wired descriptor.
 //
 //   dummy_hnsw_l2 - An index profile binding DUMMY_HNSW to the DUMMY_VECTOR
-//                   type with two function bindings: dummy_l2_distance
-//                   (fn_id=1) and dummy_helper_fn (fn_id=2, a generic
-//                   placeholder showing that profiles can bind arbitrary
-//                   per-profile helpers). Exercises IndexProfileBuilder and the
-//                   typed with_function() overload that accepts
-//                   IndexFunctionDesc directly.
+//                   type with two bindings: dummy_l2_distance (fn_id=1, a
+//                   SQL-visible with_function()) and dummy_helper_fn (fn_id=1
+//                   in the independent helpers sequence, an internal-only
+//                   with_helper()). Exercises IndexProfileBuilder's
+//                   with_function<Desc>()/with_helper<Desc>() templates.
 //
-//   dummy_l2_distance - A stub index function (DUMMY_VECTOR, DUMMY_VECTOR ->
-//                       REAL) registered via make_index_function. Exercises the
-//                       make_index_function builder.
+//   dummy_l2_distance - A stub SQL VDF (DUMMY_VECTOR, DUMMY_VECTOR -> REAL)
+//                       registered via make_func, .func(), and
+//                       with_function<DUMMY_L2_FN>(). Exercises the
+//                       with_function() compile-time checks.
 //
 //   dummy_helper_fn   - A stub index function (DUMMY_VECTOR -> REAL) registered
-//                       via make_index_function.
+//                       via make_index_function and
+//                       with_helper<DUMMY_HELPER_FN>().
 
 #include <villagesql/preview/index_builder.h>
 #include <villagesql/vsql.h>
@@ -303,17 +304,19 @@ static void dummy_helper_fn_impl(vsql::CustomArg /*a*/, vsql::RealResult out) {
   out.set(0.0);
 }
 
-// DUMMY_L2_FN and DUMMY_HELPER_FN are registered automatically when the
-// profile is registered via make_extension().index_profile().
-static const auto DUMMY_L2_FN =
-    make_index_function<&dummy_l2_distance_impl>(kDummyHNSWFunc1)
+// DUMMY_L2_FN is a normal SQL VDF: it is registered as a callable SQL
+// function via .func() below, and the SAME object is bound into the profile
+// via with_function<DUMMY_L2_FN>() so the optimizer can recognize calls to it
+// as index-scan-eligible.
+static constexpr auto DUMMY_L2_FN =
+    vsql::make_func<&dummy_l2_distance_impl>(kDummyHNSWFunc1)
         .returns(vsql::REAL)
         .param(DUMMY_VECTOR)
         .param(DUMMY_VECTOR)
         .deterministic()
         .build();
 
-static const auto DUMMY_HELPER_FN =
+static constexpr auto DUMMY_HELPER_FN =
     make_index_function<&dummy_helper_fn_impl>(kDummyHNSWFunc2)
         .returns(vsql::REAL)
         .param(DUMMY_VECTOR)
@@ -327,8 +330,8 @@ static const auto DUMMY_HELPER_FN =
 static const auto DUMMY_HNSW_L2_PROFILE = make_index_profile(kDummyProfileL2)
                                               .for_type(kDummyVECTOR)
                                               .using_index(kDummyHNSW)
-                                              .with_function(1, DUMMY_L2_FN)
-                                              .with_helper(1, DUMMY_HELPER_FN)
+                                              .with_function<DUMMY_L2_FN>(1)
+                                              .with_helper<DUMMY_HELPER_FN>(1)
                                               .ordering(Index::Ordering::ASC)
                                               .default_for_type(true)
                                               .build();
@@ -345,6 +348,7 @@ static auto INDEX_PROFILE =
         DUMMY_HNSW_L2_PROFILE);
 
 VEF_GENERATE_ENTRY_POINTS(vsql::make_extension()
+                              .func(DUMMY_L2_FN)
                               .with(INDEX_TYPE)
                               .with(INDEX_PROFILE)
                               .type(DUMMY_VECTOR))
