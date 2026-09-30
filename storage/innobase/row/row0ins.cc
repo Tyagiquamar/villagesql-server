@@ -2881,7 +2881,7 @@ dberr_t row_ins_sec_index_entry_low(uint32_t flags, ulint mode,
     ut_ad(!index->table->is_intrinsic() || (flags & BTR_NO_UNDO_LOG_FLAG));
 
     mtr.set_log_mode(MTR_LOG_NO_REDO);
-  } else if (!dict_index_is_spatial(index)) {
+  } else if (!dict_index_no_change_buffering(index)) {
     /* Enable insert buffering if it's neither temp-table
     nor spatial index. */
     search_mode |= BTR_INSERT;

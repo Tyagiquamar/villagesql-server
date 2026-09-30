@@ -4014,8 +4014,9 @@ dberr_t row_drop_table_for_mysql(const char *name, trx_t *trx, bool nonatomic,
     for (dict_index_t *index = table->first_index();
          err == DB_SUCCESS && index != nullptr; index = index->next()) {
       if (Custom_index::is_custom(index)) {
-        err = Custom_index::drop(index, trx->id);
-        continue;
+        bool drop_btree = false;
+        err = Custom_index::drop(index, trx->id, drop_btree);
+        if (err != DB_SUCCESS || !drop_btree) continue;
       }
       err = log_ddl->write_free_tree_log(trx, index, true);
     }
