@@ -985,7 +985,7 @@ enum row_search_result row_search_index_entry(
       ut_o(break);
 
     case BTR_CUR_DELETE_REF:
-      ut_a(mode & BTR_DELETE && !dict_index_is_spatial(index));
+      ut_a(mode & BTR_DELETE && !dict_index_no_change_buffering(index));
       return (ROW_NOT_DELETED_REF);
 
     case BTR_CUR_DEL_MARK_IBUF:

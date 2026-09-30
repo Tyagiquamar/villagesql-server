@@ -3345,10 +3345,12 @@ static dict_index_t *dict_index_build_internal_non_clust(
   ut_ad(clust_index->is_clustered());
   ut_ad(!dict_index_is_ibuf(clust_index));
 
+  using villagesql::innodb::Custom_index;
   /* Create a new index */
   new_index = dict_mem_index_create(table->name.m_name, index->name,
                                     index->space, index->type,
-                                    index->n_fields + 1 + clust_index->n_uniq);
+                                    index->n_fields + 1 + clust_index->n_uniq +
+                                        Custom_index::n_extra_fields(index));
 
   /* Copy other relevant data from the old index
   struct to the new struct: it inherits the values */
@@ -3404,6 +3406,8 @@ static dict_index_t *dict_index_build_internal_non_clust(
   } else {
     new_index->n_uniq = new_index->n_def;
   }
+
+  Custom_index::add_extra_fields(new_index, index);
 
   /* Set the n_fields value in new_index to the actual defined
   number of fields */

@@ -17,6 +17,7 @@
 #ifndef STORAGE_INNOBASE_VILLAGESQL_CUSTOM_INDEX_H_
 #define STORAGE_INNOBASE_VILLAGESQL_CUSTOM_INDEX_H_
 
+#include <array>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -28,12 +29,15 @@
 #include "villagesql/sdk/include/villagesql/abi/preview/index.h"
 
 // Forward declarations
+struct dict_col_t;
 struct dict_index_t;
 struct dict_table_t;
 struct dtuple_t;
+struct TABLE_SHARE;
 struct row_prebuilt_t;
 namespace dd {
 class Index;
+class Table;
 }
 
 namespace villagesql {
@@ -57,6 +61,7 @@ class Custom_index {
   using KeyRef = vef_storage_col_ref_t;
 
   static constexpr uint32_t ERROR_MSG_SIZE = 512;
+  static constexpr uint32_t MAX_EXTRA_FIELDS = 1;
 
   explicit Custom_index(std::shared_ptr<const IndexContext> index_metadata)
       : index_metadata_(std::move(index_metadata)) {}
@@ -127,18 +132,32 @@ class Custom_index {
   // state from old_index onto new_index's heap.
   static dberr_t load(dict_index_t *new_index, const dict_index_t *old_index);
 
+  // Loads all custom indexes of a table.
+  static void load_all(dict_table_t *table, const dd::Table *dd_table,
+                       const TABLE_SHARE *ts);
+
   // Returns true if index has Custom_index runtime state.
   static bool is_custom(const dict_index_t *index);
 
   // Returns true if index is a KNN custom index.
   static bool is_knn(const dict_index_t *index);
 
-  // Creates the extension-managed storage for a custom index, invoking the
-  // registered index-type create function.
-  static dberr_t create(dict_index_t *index, trx_id_t trx_id);
+  static uint32_t n_extra_fields(const dict_index_t *index);
 
-  // Drops the extension-managed storage for a custom index.
-  static dberr_t drop(dict_index_t *index, trx_id_t trx_id);
+  static void add_extra_fields(dict_index_t *new_index,
+                               const dict_index_t *index);
+
+  static uint16_t mapping_index_get_n_unique(const dict_index_t *index);
+
+  // Creates the extension-managed storage for a custom index, invoking the
+  // registered index-type create function. Sets create_btree to true if the
+  // caller must still create the InnoDB B-tree for this index.
+  static dberr_t create(dict_index_t *index, trx_id_t trx_id,
+                        bool &create_btree);
+
+  // Drops the extension-managed storage for a custom index. Sets drop_btree to
+  // true if the caller must still drop the InnoDB B-tree for this index.
+  static dberr_t drop(dict_index_t *index, trx_id_t trx_id, bool &drop_btree);
 
   // Inserts a key into the extension-managed storage for a custom index.
   static dberr_t insert(dict_index_t *index, trx_id_t trx_id,
@@ -160,6 +179,12 @@ class Custom_index {
   static void free_all(dict_index_t *index);
 
  private:
+  // Loads the extension-managed storage of an attached custom index that has
+  // a storage reference.
+  static dberr_t load_storage(dict_index_t *new_index);
+
+  bool set_mapping_index();
+
   std::shared_ptr<const IndexContext> index_metadata_;
   std::vector<std::shared_ptr<const IndexProfileDescriptor>> key_profiles_;
 
@@ -167,6 +192,12 @@ class Custom_index {
   StorageCtx *storage_ctx_ = nullptr;
   StorageRef storage_ref_{};
   bool storage_ref_initialized_ = false;
+
+  // If this custom index also have B-tree index to map PK.
+  bool m_has_mapping_index = false;
+
+  // If the mapping index uses unique column reference.
+  bool m_mapping_has_unique_colref = false;
 };
 
 }  // namespace innodb

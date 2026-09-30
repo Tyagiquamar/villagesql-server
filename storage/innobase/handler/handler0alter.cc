@@ -7324,10 +7324,12 @@ after a successful commit_try_norebuild() call.
 
       using villagesql::innodb::Custom_index;
       if (Custom_index::is_custom(index)) {
-        ut_a(index->page == FIL_NULL);
+        bool drop_btree = false;
         dict_sys_mutex_exit();
-        ut_d(dberr_t err =) Custom_index::drop(index, trx->id);
+        ut_d(dberr_t err =) Custom_index::drop(index, trx->id, drop_btree);
         ut_ad(err == DB_SUCCESS);
+        // The B-tree free log was already written above if the root exists.
+        ut_a(drop_btree || index->page == FIL_NULL);
         dict_sys_mutex_enter();
       }
 
