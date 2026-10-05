@@ -90,7 +90,9 @@ Custom_column::Info Custom_column::get_from_field(const dict_field_t *field) {
 
 Custom_column::Info Custom_column::get_from_position(const dict_index_t *index,
                                                      size_t position) {
-  if (dict_index_is_ibuf(index)) return {nullptr, true};
+  if (dict_index_is_ibuf(index) || Custom_index::has_mapping_index(index)) {
+    return {nullptr, true};
+  }
   return get_from_field(index->get_field(position));
 }
 

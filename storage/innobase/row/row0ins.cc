@@ -3251,8 +3251,12 @@ and return. don't execute actual insert. */
 
   using villagesql::innodb::Custom_index;
   if (Custom_index::is_custom(index)) {
-    return Custom_index::insert(index, thr_get_trx(thr)->id, entry,
-                                dup_chk_only);
+    bool insert_btree = false;
+    err = Custom_index::insert(index, thr_get_trx(thr)->id, entry, dup_chk_only,
+                               insert_btree);
+    if (err != DB_SUCCESS || !insert_btree) {
+      return err;
+    }
   }
 
   offsets_heap = mem_heap_create(1024, UT_LOCATION_HERE);
@@ -3416,6 +3420,7 @@ columns in row.
 @return DB_SUCCESS if the set is successful */
 dberr_t row_ins_index_entry_set_vals(const dict_index_t *index, dtuple_t *entry,
                                      const dtuple_t *row) {
+  using villagesql::innodb::Custom_index;
   ulint n_fields;
   ulint i;
   ulint num_v = dtuple_get_n_v_fields(entry);
@@ -3438,6 +3443,10 @@ dberr_t row_ins_index_entry_set_vals(const dict_index_t *index, dtuple_t *entry,
       ind_field = index->get_field(i);
       col = ind_field->col;
       ut_ad(!col->is_instant_dropped());
+    }
+
+    if (Custom_index::is_extra_field(index, i)) {
+      continue;
     }
 
     if (col->is_virtual()) {

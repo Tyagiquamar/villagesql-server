@@ -2696,19 +2696,6 @@ dberr_t dict_index_add_to_cache_w_vcol(dict_table_t *table, dict_index_t *index,
   new_index->page = page_no;
   rw_lock_create(index_tree_rw_lock_key, &new_index->lock, LATCH_ID_INDEX_TREE);
 
-  /* The conditions listed here correspond to the simplest call-path through
-  rec_get_offsets(). If they are met now, we can cache rec offsets and use the
-  cache as long they are met. We assert before using the rec_cache that they are
-  still met, and clear the rec_cache.offsets when they change. */
-  if (dict_table_is_comp(table) && !dict_index_has_virtual(index) &&
-      (!table->has_instant_cols() && !table->has_row_versions()) &&
-      !dict_index_is_spatial(index)) {
-    dict_index_try_cache_rec_offsets(new_index);
-  } else {
-    /* The rules should not prevent caching for intrinsic tables */
-    ut_ad(!table->is_intrinsic());
-  }
-
   // Carry the Custom_index runtime state onto the cache-internal index by
   // re-loading it onto new_index's heap. The prototype's Custom_index is
   // destroyed by dict_mem_index_free(index) at the end of this function.
@@ -2720,6 +2707,19 @@ dberr_t dict_index_add_to_cache_w_vcol(dict_table_t *table, dict_index_t *index,
       dict_mem_index_free(index);
       return cerr;
     }
+  }
+
+  /* The conditions listed here correspond to the simplest call-path through
+  rec_get_offsets(). If they are met now, we can cache rec offsets and use the
+  cache as long they are met. We assert before using the rec_cache that they are
+  still met, and clear the rec_cache.offsets when they change. */
+  if (dict_table_is_comp(table) && !dict_index_has_virtual(index) &&
+      (!table->has_instant_cols() && !table->has_row_versions()) &&
+      !dict_index_is_spatial(index)) {
+    dict_index_try_cache_rec_offsets(new_index);
+  } else {
+    /* The rules should not prevent caching for intrinsic tables */
+    ut_ad(!table->is_intrinsic());
   }
 
   dict_sys_mutex_enter();
