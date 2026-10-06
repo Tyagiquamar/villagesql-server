@@ -142,9 +142,6 @@ class Custom_index {
   // Returns true if index has Custom_index runtime state.
   static bool is_custom(const dict_index_t *index);
 
-  // Returns true if it is custom index with a mapping B-tree index.
-  static bool has_mapping_index(const dict_index_t *index);
-
   // Returns true if index is a KNN custom index.
   static bool is_knn(const dict_index_t *index);
 
@@ -161,24 +158,16 @@ class Custom_index {
   static bool set_extra_field(const dict_index_t *index, ulint pos,
                               dfield_t *dfield, mem_heap_t *heap);
 
-  static uint16_t mapping_index_get_n_unique(const dict_index_t *index);
-
   // Creates the extension-managed storage for a custom index, invoking the
-  // registered index-type create function. Sets create_btree to true if the
-  // caller must still create the InnoDB B-tree for this index.
-  static dberr_t create(dict_index_t *index, trx_id_t trx_id,
-                        bool &create_btree);
+  // registered index-type create function.
+  static dberr_t create(dict_index_t *index, trx_id_t trx_id);
 
-  // Drops the extension-managed storage for a custom index. Sets drop_btree to
-  // true if the caller must still drop the InnoDB B-tree for this index.
-  static dberr_t drop(dict_index_t *index, trx_id_t trx_id, bool &drop_btree);
+  // Drops the extension-managed storage for a custom index.
+  static dberr_t drop(dict_index_t *index, trx_id_t trx_id);
 
-  // Inserts a key into extension-managed storage for a custom index. Sets
-  // insert_btree to true if the caller must also insert the entry into the
-  // InnoDB B-tree that maps the key to the primary key.
+  // Inserts a key into extension-managed storage for a custom index.
   static dberr_t insert(dict_index_t *index, trx_id_t trx_id,
-                        const dtuple_t *entry, bool dup_chk_only,
-                        bool &insert_btree);
+                        const dtuple_t *entry, bool dup_chk_only);
 
   // Entry point for row_search_mvcc()/row_search_no_mvcc() when the index
   // being scanned is a custom index.
@@ -200,8 +189,6 @@ class Custom_index {
   // a storage reference.
   static dberr_t load_storage(dict_index_t *new_index);
 
-  void set_mapping_index();
-
   std::shared_ptr<const IndexContext> index_metadata_;
   std::vector<std::shared_ptr<const IndexProfileDescriptor>> key_profiles_;
 
@@ -209,12 +196,6 @@ class Custom_index {
   StorageCtx *storage_ctx_ = nullptr;
   StorageRef storage_ref_{};
   bool storage_ref_initialized_ = false;
-
-  // If this custom index also have B-tree index to map PK.
-  bool m_has_mapping_index = false;
-
-  // If the mapping index uses unique column reference.
-  bool m_mapping_has_unique_colref = false;
 };
 
 }  // namespace innodb

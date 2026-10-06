@@ -2985,7 +2985,9 @@ dberr_t row_ins_sec_index_entry_low(uint32_t flags, ulint mode,
 
   n_unique = dict_index_get_n_unique(index);
 
-  if (dict_index_is_unique(index) &&
+  // VillageSQL: Skip duplicate check for mapping B-tree for performance and
+  // to avoid unnecessary gap locks.
+  if (dict_index_is_unique(index) && !index->has_mapping_btree() &&
       (cursor.low_match >= n_unique || cursor.up_match >= n_unique)) {
     mtr_commit(&mtr);
 
@@ -3251,10 +3253,9 @@ and return. don't execute actual insert. */
 
   using villagesql::innodb::Custom_index;
   if (Custom_index::is_custom(index)) {
-    bool insert_btree = false;
-    err = Custom_index::insert(index, thr_get_trx(thr)->id, entry, dup_chk_only,
-                               insert_btree);
-    if (err != DB_SUCCESS || !insert_btree) {
+    err =
+        Custom_index::insert(index, thr_get_trx(thr)->id, entry, dup_chk_only);
+    if (err != DB_SUCCESS || !index->has_mapping_btree()) {
       return err;
     }
   }
