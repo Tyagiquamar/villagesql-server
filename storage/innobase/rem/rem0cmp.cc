@@ -930,9 +930,8 @@ bool cmp_dtuple_is_prefix_of_rec(const dtuple_t *dtuple, const rec_t *rec,
   const byte *rec2_b_ptr;
   const dict_col_t *col = index->get_col(n);
   const dict_field_t *field = index->get_field(n);
-  using villagesql::innodb::Custom_index;
   auto *custom_column =
-      Custom_index::has_mapping_index(index) ? nullptr : col->custom_column;
+      index->has_mapping_btree() ? nullptr : col->custom_column;
 
   ut_ad(!rec_offs_nth_extern(index, offsets1, n));
   ut_ad(!rec_offs_nth_extern(index, offsets2, n));
@@ -1068,9 +1067,7 @@ int cmp_rec_rec_with_match(const rec_t *rec1, const rec_t *rec2,
       mtype = col->mtype;
       prtype = col->prtype;
       is_asc = field->is_ascending;
-      using villagesql::innodb::Custom_index;
-      custom_column =
-          Custom_index::has_mapping_index(index) ? nullptr : col->custom_column;
+      custom_column = index->has_mapping_btree() ? nullptr : col->custom_column;
     }
 
     /* If the index is spatial index, we mark the

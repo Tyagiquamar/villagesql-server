@@ -366,8 +366,22 @@ static dberr_t init_index_ctx(dict_index_t *index) {
   ctx->helper_fn = vef_index_helper_fn_impl;
   ctx->key_len_fn = vef_index_max_key_len_impl;
   ctx->options = nullptr;
+  ctx->is_unique = dict_index_is_unique(index) ? 1 : 0;
 
   const auto &intf = index->custom_index->interface();
+  if ((intf.storage_props & VEF_INDEX_STORAGE_HAS_COLUMN_REF) != 0 ||
+      (intf.storage_props & VEF_INDEX_STORAGE_REF_LOOKUP) != 0) {
+    // Map the index key to the primary key and index record reference.
+    index->set_mapping_btree();
+  }
+
+  if ((intf.storage_props & VEF_INDEX_STORAGE_HAS_COLUMN_REF) != 0) {
+    // Column references uniquely identify the index entry. Mark the mapping
+    // B-tree as unique.
+    ut_ad(index->has_mapping_btree());
+    index->type |= DICT_UNIQUE;
+    index->n_uniq = index->n_user_defined_cols;
+  }
 
   // Column reference conversion is only meaningful for an index type that
   // stores column references in its entries.
@@ -386,10 +400,6 @@ bool Custom_index::is_custom(const dict_index_t *index) {
   return index != nullptr && index->custom_index != nullptr;
 }
 
-bool Custom_index::has_mapping_index(const dict_index_t *index) {
-  return is_custom(index) && index->custom_index->m_has_mapping_index;
-}
-
 bool Custom_index::is_knn(const dict_index_t *index) {
   if (!is_custom(index)) return false;
   const Custom_index *custom_index = index->custom_index;
@@ -398,15 +408,6 @@ bool Custom_index::is_knn(const dict_index_t *index) {
 
 const vef_type_index_intf_t &Custom_index::interface() const {
   return index_meta()->descriptor()->intf();
-}
-
-void Custom_index::set_mapping_index() {
-  const vef_index_storage_t storage_props = interface().storage_props;
-  m_has_mapping_index =
-      (storage_props & VEF_INDEX_STORAGE_HAS_COLUMN_REF) != 0 ||
-      (storage_props & VEF_INDEX_STORAGE_REF_LOOKUP) != 0;
-  m_mapping_has_unique_colref =
-      (storage_props & VEF_INDEX_STORAGE_HAS_COLUMN_REF) != 0;
 }
 
 uint32_t Custom_index::n_extra_fields(const dict_index_t *index) {
@@ -424,7 +425,7 @@ bool Custom_index::is_extra_field(const dict_index_t *index, ulint pos) {
   if (n_extra == 0 || pos + n_extra < n_fields) return false;
 
   // Extra fields are appended after all other fields of the index.
-  ut_ad(index->custom_index->m_has_mapping_index);
+  ut_ad(index->has_mapping_btree());
   return true;
 }
 
@@ -460,15 +461,6 @@ void Custom_index::add_extra_fields(dict_index_t *new_index,
                                 UINT8_UNDEFINED);
     field->col = col;
   }
-}
-
-uint16_t Custom_index::mapping_index_get_n_unique(const dict_index_t *index) {
-  ut_ad(is_custom(index));
-  const Custom_index *custom_index = index->custom_index;
-  ut_ad(custom_index->m_has_mapping_index);
-  return custom_index->m_mapping_has_unique_colref
-             ? index->n_user_defined_cols
-             : dict_index_get_n_fields(index);
 }
 
 ulong Custom_index::flags(const IndexContext *meta) {
@@ -514,7 +506,6 @@ dberr_t Custom_index::attach(dict_index_t *index, const IndexContext *meta,
   // AHI (Adaptive Hash Index) is tightly coupled to B-tree. Custom index types
   // do not currently support AHI.
   index->disable_ahi = true;
-  index->custom_index->set_mapping_index();
 
   if (dd_index == nullptr) return DB_SUCCESS;
 
@@ -610,7 +601,7 @@ dberr_t Custom_index::load_storage(dict_index_t *new_index) {
         << "Error loading custom index storage: " << error_msg;
     return DB_VILLAGESQL_ERROR;
   }
-  ut_ad(new_index->page == FIL_NULL || custom_index->m_has_mapping_index);
+  ut_ad(new_index->page == FIL_NULL || new_index->has_mapping_btree());
 
   storage->ref = custom_index->storage_ref();
   custom_index->set_storage_ctx(storage);
@@ -681,15 +672,14 @@ void Custom_index::load_all(dict_table_t *table, const dd::Table *dd_table,
   }
 }
 
-dberr_t Custom_index::create(dict_index_t *index, trx_id_t trx_id,
-                             bool &create_btree) {
+dberr_t Custom_index::create(dict_index_t *index, trx_id_t trx_id) {
   ut_a(is_custom(index));
 
   index->page = FIL_NULL;
   index->trx_id = trx_id;
 
-  dberr_t init_err = init_index_ctx(index);
-  if (init_err != DB_SUCCESS) return init_err;
+  // Custom index must already have been initialized by ::load
+  ut_ad(index->custom_index->index_ctx());
 
   auto arena_alloc = [](vef_storage_arena_t *actx, uint32_t sz) -> void * {
     return mem_heap_zalloc(reinterpret_cast<mem_heap_t *>(actx), sz);
@@ -721,13 +711,11 @@ dberr_t Custom_index::create(dict_index_t *index, trx_id_t trx_id,
         << "Error creating custom index storage: " << error_msg;
     return DB_VILLAGESQL_ERROR;
   }
-  create_btree = index->custom_index->m_has_mapping_index;
   index->custom_index->set_storage_ctx(storage);
   return DB_SUCCESS;
 }
 
-dberr_t Custom_index::drop(dict_index_t *index, trx_id_t trx_id,
-                           bool &drop_btree) {
+dberr_t Custom_index::drop(dict_index_t *index, trx_id_t trx_id) {
   ut_a(is_custom(index));
 
   Custom_index *custom_index = index->custom_index;
@@ -738,7 +726,6 @@ dberr_t Custom_index::drop(dict_index_t *index, trx_id_t trx_id,
       custom_index->index_ctx(), custom_index->storage_ctx(),
       static_cast<vef_storage_trx_ref_t>(trx_id), error_msg, sizeof(error_msg));
   custom_index->set_storage_ctx(nullptr);
-  drop_btree = custom_index->m_has_mapping_index;
 
   if (failed) {
     error_msg[sizeof(error_msg) - 1] = '\0';
@@ -761,10 +748,7 @@ static vef_storage_col_data_t to_col_data(const dfield_t *field) {
 }
 
 dberr_t Custom_index::insert(dict_index_t *index, trx_id_t trx_id,
-                             const dtuple_t *entry, bool dup_chk_only,
-                             bool &insert_btree) {
-  insert_btree = false;
-
+                             const dtuple_t *entry, bool dup_chk_only) {
   // Custom indexes are not supported on intrinsic tables, and dup_chk_only is
   // only used for intrinsic tables because they cannot be rolled back.
   ut_ad(!dup_chk_only);
@@ -847,7 +831,6 @@ dberr_t Custom_index::insert(dict_index_t *index, trx_id_t trx_id,
     mach_write_to_8(static_cast<byte *>(dfield_get_data(key_ref_field)),
                     key_ref);
   }
-  insert_btree = custom_index->m_has_mapping_index;
   return DB_SUCCESS;
 }
 
