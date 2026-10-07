@@ -36,6 +36,8 @@
 #include "storage/innobase/include/ha_prototypes.h"
 #include "storage/innobase/include/mach0data.h"
 #include "storage/innobase/include/mem0mem.h"
+#include "storage/innobase/include/que0que.h"
+#include "storage/innobase/include/row0mysql.h"
 #include "storage/innobase/include/univ.i"
 #include "villagesql/include/error.h"
 #include "villagesql/schema/descriptor/index_context.h"
@@ -834,8 +836,10 @@ dberr_t Custom_index::insert(dict_index_t *index, trx_id_t trx_id,
   return DB_SUCCESS;
 }
 
-dberr_t Custom_index::row_search(byte *, page_cur_mode_t, row_prebuilt_t *,
-                                 ulint, ulint, bool is_mvcc) {
+dberr_t Custom_index::row_search(byte *buf, page_cur_mode_t mode,
+                                 row_prebuilt_t *prebuilt, ulint match_mode,
+                                 ulint direction, bool range_lock,
+                                 bool scan_forward, bool is_mvcc) {
   ut_ad(is_mvcc);
   if (!is_mvcc) {
     ib::error(ER_VILLAGESQL_GENERIC_MESSAGE)
@@ -843,8 +847,52 @@ dberr_t Custom_index::row_search(byte *, page_cur_mode_t, row_prebuilt_t *,
     return DB_VILLAGESQL_ERROR;
   }
 
-  // TODO(villagesql-indexing): Drive the custom index type's scan_begin /
-  // scan_fetch / scan_end interface instead of rejecting every scan.
+  ut_ad(!range_lock);
+  if (range_lock) {
+    ib::error(ER_VILLAGESQL_GENERIC_MESSAGE)
+        << "Custom index doesn't support range lock.";
+    return DB_VILLAGESQL_ERROR;
+  }
+  // We come here from row_search_mvcc after PHASE 1, PHASE 2, and part of
+  // PHASE 3, before opening the cursor. Keep this functionally aligned with
+  // PHASE 3, 4 nd 5 of row_search_mvcc. We cannot reuse the code directly
+  // because it depends on the B-tree record format.
+
+  que_thr_t *thr = que_fork_get_first_thr(prebuilt->sel_graph);
+  dict_index_t *index = prebuilt->index;
+  dict_index_t *clust_index = index->table->first_index();
+  ut_ad(!index->is_clustered());
+  ut_ad(!dict_index_is_spatial(index));
+
+  dtuple_t *search_tuple = prebuilt->search_tuple;
+  trx_t *trx = prebuilt->trx;
+  bool clust_templ_for_sec = prebuilt->need_to_access_clustered;
+
+  (void)thr;
+  (void)clust_index;
+  (void)trx;
+  (void)clust_templ_for_sec;
+
+  // PHASE 3: Open or restore index cursor position
+  mtr_t mtr;
+  mtr_start(&mtr);
+
+  if (direction != 0) {
+    // A. Restore Cursor. [sel_restore_position_for_mysql]
+    ut_ad(prebuilt->row_read_type != ROW_READ_TRY_SEMI_CONSISTENT);
+    ut_ad(prebuilt->row_read_type != ROW_READ_DID_SEMI_CONSISTENT);
+  } else if (dtuple_get_n_fields(search_tuple) > 0) {
+    // B. Open Cursor using serach tuple and mode [pcur->open_no_init]
+  } else {
+    // C. Open cursor to read all [pcur->open_at_side]
+    ut_ad(mode == PAGE_CUR_G || mode == PAGE_CUR_L);
+  }
+
+  // PHASE 4: Look for matching records in a loop
+
+  // PHASE 5: Move the cursor to the next index record
+
+  mtr_commit(&mtr);
   ib::error(ER_VILLAGESQL_GENERIC_MESSAGE)
       << "Row search on a custom index is not supported yet.";
   return DB_VILLAGESQL_ERROR;
