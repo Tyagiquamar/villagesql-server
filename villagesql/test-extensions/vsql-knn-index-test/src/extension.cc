@@ -788,9 +788,18 @@ static void kvec_reset_counters(vsql::IntResult out) {
 }
 
 // KVEC_L2_FN is a normal SQL VDF: registered via .func() below and bound into
-// the profile as both the SQL function and the index helper.
+// the profile with with_function(). KVEC_L2_HELPER_FN is the same function
+// declared as an index helper for with_helper().
 static constexpr auto KVEC_L2_FN =
     vsql::make_func<&kvec_l2_distance_fn>(kKVecL2Func)
+        .returns(vsql::REAL)
+        .param(KVECTOR)
+        .param(KVECTOR)
+        .deterministic()
+        .build();
+
+static constexpr auto KVEC_L2_HELPER_FN =
+    make_index_function<&kvec_l2_distance_fn>(kKVecL2Func)
         .returns(vsql::REAL)
         .param(KVECTOR)
         .param(KVECTOR)
@@ -801,7 +810,7 @@ static const auto KVEC_L2_PROFILE = make_index_profile(kKVecProfileL2)
                                         .for_type(kKVectorType)
                                         .using_index(kKVecIndexL2)
                                         .with_function<KVEC_L2_FN>(1)
-                                        .with_helper<KVEC_L2_FN>(1)
+                                        .with_helper<KVEC_L2_HELPER_FN>(1)
                                         .ordering(Index::Ordering::ASC)
                                         .default_for_type(true)
                                         .build();
@@ -827,11 +836,19 @@ static constexpr auto KVEC_COS_FN =
         .deterministic()
         .build();
 
+static constexpr auto KVEC_COS_HELPER_FN =
+    make_index_function<&kvec_cos_distance_fn>(kKVecCosFunc)
+        .returns(vsql::REAL)
+        .param(KVECTOR)
+        .param(KVECTOR)
+        .deterministic()
+        .build();
+
 static const auto KVEC_COS_PROFILE = make_index_profile(kKVecProfileCos)
                                          .for_type(kKVectorType)
                                          .using_index(kKVecIndexCos)
                                          .with_function<KVEC_COS_FN>(1)
-                                         .with_helper<KVEC_COS_FN>(1)
+                                         .with_helper<KVEC_COS_HELPER_FN>(1)
                                          .ordering(Index::Ordering::ASC)
                                          .build();
 
