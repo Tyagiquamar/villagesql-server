@@ -1152,41 +1152,77 @@ struct IndexFunctionDesc {
   bool is_deterministic;
 };
 
+// Descriptor returned by make_index_function().build(). It wraps the
+// func_builder descriptor in a distinct type so that with_helper() can accept
+// only index helpers and with_function() can accept only make_func()
+// descriptors. It deliberately has no required_protocol(), so it cannot be
+// passed to make_extension().func().
+template <size_t NumParams>
+struct IndexHelperDesc {
+  vsql::func_builder::detail::StaticFuncDesc<NumParams> desc;
+};
+
 namespace detail {
+
+template <typename T>
+inline constexpr bool is_static_func_desc_v = false;
+template <size_t N>
+inline constexpr bool
+    is_static_func_desc_v<vsql::func_builder::detail::StaticFuncDesc<N>> = true;
+
+template <typename T>
+inline constexpr bool is_index_helper_desc_v = false;
+template <size_t N>
+inline constexpr bool is_index_helper_desc_v<IndexHelperDesc<N>> = true;
+
+template <const auto &FuncDesc>
+using DescType = std::remove_cv_t<std::remove_reference_t<decltype(FuncDesc)>>;
+
+template <size_t N>
+constexpr const vsql::func_builder::detail::StaticFuncDesc<N> &UnwrapFuncDesc(
+    const vsql::func_builder::detail::StaticFuncDesc<N> &d) {
+  return d;
+}
+
+template <size_t N>
+constexpr const vsql::func_builder::detail::StaticFuncDesc<N> &UnwrapFuncDesc(
+    const IndexHelperDesc<N> &d) {
+  return d.desc;
+}
 
 // Enforces the norm shared by with_function() and with_helper(): the bound
 // function must be deterministic, stateless, not an aggregate, fixed-arity,
 // have no parameterized custom-type argument, and return REAL. This holds
-// regardless of whether FuncDesc was declared with vsql::make_func() or
-// make_index_function() -- index scan implementations might invoke both kinds
-// of binding through the same raw vef_vdf_func_t call, with no prerun()/
-// user_data round trip, and require a REAL result.
+// for both kinds of binding -- index scan implementations might invoke them
+// through the same raw vef_vdf_func_t call, with no prerun()/user_data round
+// trip, and require a REAL result.
 template <const auto &FuncDesc>
 void CheckIndexProfileFuncNorm() {
-  static_assert(FuncDesc.deterministic(),
+  constexpr const auto &d = UnwrapFuncDesc(FuncDesc);
+  static_assert(d.deterministic(),
                 "index profile function/helper must call .deterministic() "
                 "-- the optimizer may cache or reorder index-scan-eligible "
                 "calls");
-  static_assert(FuncDesc.prerun() == nullptr && FuncDesc.postrun() == nullptr,
+  static_assert(d.prerun() == nullptr && d.postrun() == nullptr,
                 "index profile function/helper must not use prerun()/postrun() "
                 "state -- it is invoked with no user_data set up");
-  static_assert(
-      FuncDesc.clear() == nullptr && FuncDesc.accumulate() == nullptr,
-      "index profile function/helper must not be an aggregate -- use "
-      "make_func() or make_index_function(), not make_aggregate_func()");
-  static_assert(FuncDesc.num_params() != VEF_PARAM_VARARGS,
+  static_assert(d.clear() == nullptr && d.accumulate() == nullptr,
+                "index profile function/helper must not be an aggregate -- "
+                "use make_func() or make_index_function(), not "
+                "make_aggregate_func()");
+  static_assert(d.num_params() != VEF_PARAM_VARARGS,
                 "varargs VDFs are not supported as index profile functions "
                 "or helpers");
-  static_assert(FuncDesc.return_type().id == VEF_TYPE_REAL,
+  static_assert(d.return_type().id == VEF_TYPE_REAL,
                 "index profile functions and helpers must return REAL");
 }
 
-// Converts any func_builder-produced descriptor (vsql::func_builder's
-// StaticFuncDesc, shared by make_func() and make_index_function()) into an
-// IndexFunctionDesc. Callers are responsible for running
-// CheckIndexProfileFuncNorm() on FuncDescT first.
+// Converts a func_builder-produced descriptor (a make_func() StaticFuncDesc or
+// an IndexHelperDesc) into an IndexFunctionDesc. Callers are responsible for
+// running CheckIndexProfileFuncNorm() on the descriptor first.
 template <typename FuncDescT>
-constexpr IndexFunctionDesc ToIndexFunctionDesc(const FuncDescT &d) {
+constexpr IndexFunctionDesc ToIndexFunctionDesc(const FuncDescT &desc) {
+  const auto &d = UnwrapFuncDesc(desc);
   IndexFunctionDesc result{};
   result.name = d.name();
   result.protocol = d.required_protocol();
@@ -1242,13 +1278,18 @@ class IndexProfileBuilder {
   }
 
   // Bind fn_id to a user-visible SQL function. FuncDesc is a VDF built with
-  // vsql::make_func(...).build()
-  // e.g. `static constexpr auto MY_FN = make_func<&my_fn>(...).build();`.
+  // vsql::make_func(...).build(), e.g.
+  // `static constexpr auto MY_FN = make_func<&my_fn>(...).build();`.
+  // A descriptor from make_index_function() is rejected at compile time.
   // See detail::CheckIndexProfileFuncNorm() for the shape FuncDesc must have;
   // violating it is a compile error. fn_ids must be unique within the
   // functions list (checked by the server at registration time, not here).
   template <const auto &FuncDesc>
   IndexProfileBuilder &with_function(uint32_t fn_id) {
+    static_assert(
+        detail::is_static_func_desc_v<detail::DescType<FuncDesc>>,
+        "with_function() requires a function built with vsql::make_func(); "
+        "functions built with make_index_function() go in with_helper()");
     detail::CheckIndexProfileFuncNorm<FuncDesc>();
     desc_.functions.push_back({fn_id, detail::ToIndexFunctionDesc(FuncDesc)});
     return *this;
@@ -1257,7 +1298,8 @@ class IndexProfileBuilder {
   // Bind fn_id to a helper function invoked only by the index implementation
   // via vef_index_ctx_t.helper_fn. FuncDesc is declared with
   // make_index_function(...).build() -- unlike with_function(), helpers are
-  // not SQL-visible. Declare FuncDesc with static storage duration usable in
+  // not SQL-visible. A descriptor from vsql::make_func() is rejected at
+  // compile time. Declare FuncDesc with static storage duration usable in
   // a constant expression, e.g. `static constexpr auto MY_HELPER_FN =
   // make_index_function<&my_helper_fn>(...).build();`.
   //
@@ -1266,6 +1308,11 @@ class IndexProfileBuilder {
   // fn_id sequence and must be unique within the helpers list.
   template <const auto &FuncDesc>
   IndexProfileBuilder &with_helper(uint32_t fn_id) {
+    static_assert(
+        detail::is_index_helper_desc_v<detail::DescType<FuncDesc>>,
+        "with_helper() requires a function built with make_index_function(); "
+        "SQL-visible functions built with vsql::make_func() go in "
+        "with_function()");
     detail::CheckIndexProfileFuncNorm<FuncDesc>();
     desc_.helpers.push_back({fn_id, detail::ToIndexFunctionDesc(FuncDesc)});
     return *this;
@@ -1306,14 +1353,17 @@ inline IndexProfileBuilder make_index_profile(const char *name) {
 // Registers an internal helper function for use by index operations
 // (distance, comparison) via IndexProfileBuilder::with_helper(). SQL-visible
 // functions bound via with_function() do not use this -- they are declared
-// with the normal vsql::make_func() instead (see INDEX PROFILE above).
+// with the normal vsql::make_func() instead (see INDEX PROFILE above). The
+// builder mirrors vsql::make_func() for the options that are valid on an index
+// function; prerun(), postrun(), varargs(), buffer_size() and
+// max_result_length() are not offered because the profile norm forbids or
+// ignores them (see detail::CheckIndexProfileFuncNorm()).
 
-template <auto F, size_t NumParams, uint32_t Bits = 0,
+template <auto F, size_t NumParams,
           vsql::func_builder::ParamMode Mode =
               vsql::func_builder::ParamMode::kUnset>
 class IndexFuncBuilder {
   using Inner = vsql::func_builder::FuncBuilder<F, NumParams, Mode>;
-  static constexpr uint32_t kDeterministic = 1u << 0;
 
  public:
   explicit constexpr IndexFuncBuilder(Inner inner) : inner_(std::move(inner)) {}
@@ -1323,26 +1373,27 @@ class IndexFuncBuilder {
     return *this;
   }
 
-  constexpr IndexFuncBuilder<F, NumParams + 1, Bits,
+  constexpr IndexFuncBuilder<F, NumParams + 1,
                              vsql::func_builder::ParamMode::kFixed>
   param(const char *t) const {
-    return IndexFuncBuilder<F, NumParams + 1, Bits,
+    return IndexFuncBuilder<F, NumParams + 1,
                             vsql::func_builder::ParamMode::kFixed>{
         inner_.param(t)};
   }
 
-  constexpr IndexFuncBuilder<F, NumParams, Bits | kDeterministic, Mode>
-  deterministic() && {
-    inner_.deterministic(true);
-    return IndexFuncBuilder<F, NumParams, Bits | kDeterministic, Mode>{
-        std::move(inner_)};
+  constexpr IndexFuncBuilder<F, 0, vsql::func_builder::ParamMode::kFixed>
+  no_params() const {
+    return IndexFuncBuilder<F, 0, vsql::func_builder::ParamMode::kFixed>{
+        inner_.no_params()};
   }
 
-  constexpr auto build() const {
-    static_assert(
-        (Bits & kDeterministic) != 0,
-        "index function: deterministic() must be called before build()");
-    return inner_.build();
+  constexpr IndexFuncBuilder &deterministic(bool d = true) {
+    inner_.deterministic(d);
+    return *this;
+  }
+
+  constexpr IndexHelperDesc<NumParams> build() const {
+    return IndexHelperDesc<NumParams>{inner_.build()};
   }
 
  private:
