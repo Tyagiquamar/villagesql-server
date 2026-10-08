@@ -67,7 +67,8 @@
 //               .restore<&hnsw_restore>()
 //               .end<&hnsw_end_scan>()
 //           .global()
-//               .capabilities(Index::Support::KNN)
+//               .capabilities(Index::Support::KNN |
+//                             Index::Support::APPROXIMATE)
 //               .storage_props(Index::Storage::HAS_COLUMN_REF |
 //                              Index::Storage::REF_LOOKUP)
 //               .options<HNSWOptions, &HNSWOptions::parse>()
@@ -237,7 +238,7 @@
 //       make_index_profile("my_profile")
 //           .for_type(kMyType)
 //           .using_index(kMyIndex)
-//           .with_function<MY_INDEX_FN>(1, FunctionKind::Order)
+//           .with_function<MY_INDEX_FN>(1, FunctionKind::Restrict)
 //           .with_helper<MY_HELPER_FN>(1)
 //           .ordering(Index::Ordering::ASC)
 //           .build();
@@ -355,6 +356,7 @@ class Index {
     REVERSE_SCAN = VEF_INDEX_CAP_REVERSE_SCAN,
     ORDER_BY = VEF_INDEX_CAP_ORDER_BY,
     KNN = VEF_INDEX_CAP_KNN,
+    APPROXIMATE = VEF_INDEX_CAP_APPROXIMATE,
   };
 
   // Storage property flags for use with .storage_props(). Can be combined with

@@ -53,6 +53,9 @@ typedef uint32_t vef_index_cap_t;
 // Supports index scan for K nearest neighbours.
 // ORDER BY distance_function(index_column, reference_key) LIMIT K;
 #define VEF_INDEX_CAP_KNN ((vef_index_cap_t)1u << 4)
+// Index scan may return approximate results (e.g. approximate nearest
+// neighbour search); results may omit or misorder some matching rows.
+#define VEF_INDEX_CAP_APPROXIMATE ((vef_index_cap_t)1u << 4)
 
 // Physical storage properties (used by InnoDB).
 // Every index entry must carry a back-reference to the data it indexes so the
