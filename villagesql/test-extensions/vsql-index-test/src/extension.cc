@@ -156,7 +156,8 @@ static bool dummy_fetch(Index::Cursor /*cursor*/,
                         IndexScanKey::KeyPartRef * /*key_ref*/,
                         IndexScanKey::KeyPartData * /*key_columns*/,
                         IndexScanKey::KeyPartData * /*pkey_columns*/,
-                        char * /*err*/, uint32_t /*err_len*/) {
+                        Segment::TrxRef * /*trx_ref*/, char * /*err*/,
+                        uint32_t /*err_len*/) {
   return false;
 }
 
