@@ -867,8 +867,6 @@ struct row_prebuilt_t {
   /** @return true if the KNN limit is an exact row count, false if it is
   only an estimate */
   bool knn_limit_is_exact() const {
-    // KNN scan is not used for FTS.
-    ut_ad(!in_fts_query);
     return m_knn_limit_is_exact;
   }
 
