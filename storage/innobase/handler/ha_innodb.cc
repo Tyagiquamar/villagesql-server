@@ -10410,7 +10410,8 @@ int ha_innobase::knn_index_init(uint keynr, const uchar *key, uint length,
       m_prebuilt->srch_key_val_len, m_prebuilt->index, key, length);
 
   m_prebuilt->m_knn_query = true;
-  m_prebuilt->set_knn_limit(limit, limit_is_exact);
+  m_prebuilt->set_knn_limit(
+      limit, limit_is_exact && m_prebuilt->select_lock_type == LOCK_NONE);
 
   return 0;
 }
