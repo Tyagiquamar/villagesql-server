@@ -69,13 +69,16 @@ const Item_udf_func *knn_order_call(Item *item, Item_field **field_arg,
 }
 
 // Returns the profile function binding that `order_call` was
-// registered from, or nullptr if `profile` does not declare it.
+// registered from, or nullptr if `profile` does not declare it as an ORDER
+// function.
 const vef_index_profile_fn_binding_t *find_profile_function(
     const IndexProfileDescriptor *profile, const Item_udf_func *order_call) {
   const vef_func_desc_t *desc = order_call->vdf_func_desc();
   if (desc == nullptr) return nullptr;
   for (const auto &binding : profile->functions()) {
-    if (binding.vdf == desc->vdf) return &binding;
+    if (binding.vdf == desc->vdf &&
+        binding.kind == VEF_INDEX_PROFILE_FN_KIND_ORDER)
+      return &binding;
   }
   return nullptr;
 }
@@ -87,7 +90,8 @@ const vef_index_profile_fn_binding_t *find_profile_function(
 // Returns true if a KNN scan on `tab` returning `select_limit` rows fully
 // satisfies the query block's LIMIT.
 bool knn_limit_is_exact(const JOIN_TAB *tab) {
-  return tab->condition() == nullptr && tab->join()->plan_is_single_table();
+  return tab->condition() == nullptr && tab->join()->plan_is_single_table() &&
+         tab->table()->reginfo.lock_type == TL_READ;
 }
 
 int find_knn_capable_key(const Field *field, const Key_map *map,
@@ -133,6 +137,24 @@ bool try_knn_order(JOIN_TAB *tab, ORDER_with_src &order, int ref_key,
   // reorder/collapse rows afterward, so it cannot be combined with a KNN
   // scan used to satisfy ordering.
   if (!tab->join()->group_list.empty()) return false;
+
+  // KNN scans are not supported under SERIALIZABLE, or under REPEATABLE READ
+  // for locking reads, because KNN indexes cannot provide the required
+  // range-locking guarantees.
+  const enum_tx_isolation isolation = tab->join()->thd->tx_isolation;
+  if (isolation == ISO_SERIALIZABLE) return false;
+  if (isolation == ISO_REPEATABLE_READ &&
+      tab->table()->reginfo.lock_type != TL_READ)
+    return false;
+
+  // A locking read using a KNN scan is unsafe for statement based replication,
+  // but the logging format is decided before optimization and cannot be
+  // changed here. So do not use KNN for locking reads logged as statements.
+  const THD *thd = tab->join()->thd;
+  if (tab->table()->reginfo.lock_type != TL_READ &&
+      !thd->is_current_stmt_binlog_format_row() &&
+      !thd->is_current_stmt_binlog_disabled())
+    return false;
 
   // TODO(villagesql-indexing): Consider replacing the existing index plan with
   // KNN based on cost analysis, similar to test_if_cheaper_ordering() called
