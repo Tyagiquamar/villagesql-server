@@ -154,6 +154,7 @@ static bool dummy_position(Index::Cursor /*cursor*/, Index::CursorOp /*op*/,
 
 static bool dummy_fetch(Index::Cursor /*cursor*/,
                         IndexScanKey::KeyPartRef * /*key_ref*/,
+                        IndexScanKey::KeyPartRef * /*key_column_refs*/,
                         IndexScanKey::KeyPartData * /*key_columns*/,
                         IndexScanKey::KeyPartData * /*pkey_columns*/,
                         Segment::TrxRef * /*trx_ref*/, char * /*err*/,

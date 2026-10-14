@@ -432,9 +432,15 @@ typedef bool (*vef_type_index_scan_position_func_t)(
 //                  set. Follows the same stability guarantees as the key_ref
 //                  output of insert: stable across mini-transactions and
 //                  transactions until the entry is physically removed by purge.
+//   key_column_refs - Caller-allocated array of index_ctx->num_key_columns
+//                  vef_storage_col_ref_t values. The extension fills this
+//                  array, instead of key_columns, when
+//                  VEF_INDEX_STORAGE_HAS_COLUMN_REF is set in storage_props.
 //   key_columns  - Caller-allocated array of index_ctx->num_key_columns
 //                  vef_storage_col_data_t structs; the extension sets each
-//                  data pointer and length to the key data at this position
+//                  data pointer and length to the key data at this position.
+//                  Filled only when VEF_INDEX_STORAGE_HAS_COLUMN_REF is not
+//                  set.
 //   pkey_columns - Caller-allocated array of
 //                  index_ctx->num_primary_key_columns vef_storage_col_data_t
 //                  structs; the extension sets each data pointer and length
@@ -445,8 +451,9 @@ typedef bool (*vef_type_index_scan_position_func_t)(
 // Returns false on success, true on error (writes to error_msg).
 typedef bool (*vef_type_index_scan_fetch_func_t)(
     vef_index_cursor_ref_t cursor, vef_storage_col_ref_t *key_ref,
-    vef_storage_col_data_t *key_columns, vef_storage_col_data_t *pkey_columns,
-    vef_storage_trx_ref_t *trx_ref, char *error_msg, uint32_t error_msg_len);
+    vef_storage_col_ref_t *key_column_refs, vef_storage_col_data_t *key_columns,
+    vef_storage_col_data_t *pkey_columns, vef_storage_trx_ref_t *trx_ref,
+    char *error_msg, uint32_t error_msg_len);
 
 // Save the current cursor position before the active mini-transaction commits.
 // The server calls this when it is about to commit the mini-transaction the
