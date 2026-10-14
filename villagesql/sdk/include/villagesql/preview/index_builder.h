@@ -532,6 +532,7 @@ using ScanPositionFn = bool (*)(Index::Cursor, Index::CursorOp, bool *, char *,
                                 uint32_t);
 
 using ScanFetchFn = bool (*)(Index::Cursor, IndexScanKey::KeyPartRef *,
+                             IndexScanKey::KeyPartRef *,
                              IndexScanKey::KeyPartData *,
                              IndexScanKey::KeyPartData *, Segment::TrxRef *,
                              char *, uint32_t);
@@ -711,12 +712,13 @@ template <auto F>
 struct ScanFetchWrapper {
   static bool invoke(vef_index_cursor_ref_t cursor,
                      vef_storage_col_ref_t *key_ref,
+                     vef_storage_col_ref_t *key_column_refs,
                      vef_storage_col_data_t *key_columns,
                      vef_storage_col_data_t *pkey_columns,
                      vef_storage_trx_ref_t *trx_ref, char *error_msg,
                      uint32_t error_msg_len) {
-    return F(cursor, key_ref, key_columns, pkey_columns, trx_ref, error_msg,
-             error_msg_len);
+    return F(cursor, key_ref, key_column_refs, key_columns, pkey_columns,
+             trx_ref, error_msg, error_msg_len);
   }
 };
 
@@ -981,7 +983,8 @@ class ScanBuilder {
     static_assert(
         std::is_same_v<decltype(F), detail::ScanFetchFn>,
         "fetch: expected bool(*)(Index::Cursor, KeyPartRef*, "
-        "KeyPartData* keys, KeyPartData* pkeys, TrxRef*, char*, uint32_t)");
+        "KeyPartRef* key_refs, KeyPartData* keys, KeyPartData* pkeys, "
+        "TrxRef*, char*, uint32_t)");
     intf_.scan_fetch = detail::ScanFetchWrapper<F>::invoke;
     return {name_, intf_};
   }
