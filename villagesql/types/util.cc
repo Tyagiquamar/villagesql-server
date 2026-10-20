@@ -1384,31 +1384,47 @@ type_conversion_status TryEncodeStringFieldToCustom(Field *from_field,
   return to_field->store(encoded->ptr(), encoded->length(), &my_charset_bin);
 }
 
-type_conversion_status EncodeAndStoreStringToCustomField(
-    const String &str_value, Field *field) {
+// The charset a parameter's bytes are in. set_str() labels them binary, and
+// convert_value() relabels them (converting if needed) only for a
+// string-typed parameter. Bytes still labelled binary are in the charset they
+// arrived in, collation_source(). A custom type's encode reads them as text,
+// so it needs that charset.
+static const String ParamValueInItsCharset(const Item_param *param,
+                                           const String &str_value) {
+  const CHARSET_INFO *cs = str_value.charset() == &my_charset_bin
+                               ? param->collation_source()
+                               : str_value.charset();
+  return String(str_value.ptr(), str_value.length(), cs);
+}
+
+type_conversion_status ParamEncodeAndStoreCustomField(const Item_param *param,
+                                                      const String &str_value,
+                                                      Field *field) {
+  const String value = ParamValueInItsCharset(param, str_value);
   EncodeStatus status = EncodeStatus::kBadValue;
-  String *encoded = EncodeStringForField(field, str_value, status);
+  String *encoded = EncodeStringForField(field, value, status);
   if (encoded == nullptr) {
     return HandleFailedEncode(field, status, false);
   }
   return field->store(encoded->ptr(), encoded->length(), &my_charset_bin);
 }
 
-String *EncodeStringForCustomParam(Item *item, const String &str_value,
+String *EncodeStringForCustomParam(Item_param *param, const String &str_value,
                                    bool &null_value) {
+  const String value = ParamValueInItsCharset(param, str_value);
   EncodeStatus status = EncodeStatus::kBadValue;
   String converted;
   const String *given = nullptr;
-  String *encoded = EncodeForItem(item, str_value, &converted, &given, status);
+  String *encoded = EncodeForItem(param, value, &converted, &given, status);
   if (encoded == nullptr) {
     if (status == EncodeStatus::kBadValue) {
       // Invalid value for custom type
-      const TypeContext *tc = item->get_type_context();
+      const TypeContext *tc = param->get_type_context();
       const ErrConvString errmsg(given->ptr(), given->length(),
                                  given->charset());
       villagesql_error("Incorrect %s value: '%s' for parameter '%s'", MYF(0),
                        tc->qualified_name().c_str(), errmsg.ptr(),
-                       item->item_name.ptr());
+                       param->item_name.ptr());
     }
     // kErrorRaised has already raised its own diagnostic.
     // Signal "no string" to val_str() the usual way.
