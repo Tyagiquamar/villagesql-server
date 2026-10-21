@@ -796,7 +796,10 @@ static vef_storage_col_data_t to_col_data(const dfield_t *field) {
 }
 
 dberr_t Custom_index::insert(dict_index_t *index, trx_id_t trx_id,
-                             const dtuple_t *entry, bool dup_chk_only) {
+                             const dtuple_t *entry, bool dup_chk_only,
+                             bool *is_key_null) {
+  *is_key_null = false;
+
   // Custom indexes are not supported on intrinsic tables, and dup_chk_only is
   // only used for intrinsic tables because they cannot be rolled back.
   ut_ad(!dup_chk_only);
@@ -849,8 +852,19 @@ dberr_t Custom_index::insert(dict_index_t *index, trx_id_t trx_id,
     ut_ad(intf.storage_props & VEF_INDEX_STORAGE_HAS_COLUMN_REF);
   }
 
+  *is_key_null = true;
   for (uint32_t i = 0; i < num_key_columns; i++) {
     key_columns[i] = to_col_data(dtuple_get_nth_field(entry, i));
+    if (key_columns[i].data != nullptr) {
+      *is_key_null = false;
+    }
+  }
+
+  // NULL keys are not inserted into the custom index, or into the mapping
+  // B-tree when the index needs one. For example, an HNSW index neither indexes
+  // nor returns NULL values.
+  if (*is_key_null && index->has_mapping_btree()) {
+    return DB_SUCCESS;
   }
 
   KeyRef key_ref{};
