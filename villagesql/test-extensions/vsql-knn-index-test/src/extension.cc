@@ -607,9 +607,11 @@ static bool kvec_position(Index::Cursor cursor, Index::CursorOp op, bool *eof,
 }
 
 static bool kvec_fetch(Index::Cursor cursor, IndexScanKey::KeyPartRef *key_ref,
+                       IndexScanKey::KeyPartRef *key_column_refs,
                        IndexScanKey::KeyPartData * /*key_columns*/,
-                       IndexScanKey::KeyPartData *pkey_columns, char *err,
-                       uint32_t err_len) {
+                       IndexScanKey::KeyPartData *pkey_columns,
+                       Segment::TrxRef * /*trx_ref*/, bool * /*delete_mark*/,
+                       char *err, uint32_t err_len) {
   auto *c = static_cast<KVecCursor *>(cursor);
   if (c->pos >= c->results.size()) {
     snprintf(err, err_len, "kvec_l2: fetch past end of cursor");
