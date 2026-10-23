@@ -41,7 +41,7 @@ jobs:
       HANG_DIR: ${{ github.workspace }}/hang
       # suite:  the whole village suite exactly as sanitizer.yml runs it.
       # repeat: INSTANCES concurrent mtr runs of the one test, REPEAT times each.
-      MODE: suite
+      MODE: repeat
       INSTANCES: 8
       REPEAT: 20
       # Seconds of silence after "MySQL Server - end." that count as a hang.
