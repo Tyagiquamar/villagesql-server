@@ -78,8 +78,9 @@ jobs:
     - name: Append to LSAN_OPTIONS
       if: env.LSAN_OPTIONS_APPEND != ''
       run: |
-        mtr="$BUILD_DIR/mysql-test/mysql-test-run.pl"
-        sed -i --follow-symlinks \
+        # The build dir's mysql-test-run.pl is a wrapper that runs this one.
+        mtr="$SOURCE_DIR/mysql-test/mysql-test-run.pl"
+        sed -i \
           "s|\",print_suppressions=0\"|\",print_suppressions=0${LSAN_OPTIONS_APPEND}\"|" "$mtr"
         grep -n -A1 'print_suppressions=0' "$mtr"
         grep -q "print_suppressions=0${LSAN_OPTIONS_APPEND}" "$mtr"
@@ -128,8 +129,9 @@ jobs:
     - name: Summarize restarts
       if: always()
       run: |
+        mkdir -p "$HANG_DIR"
         logs=$(ls "$BUILD_DIR"/mysql-test/var/*/log/mysqld.2.err \
-                  /dev/shm/clonehang_*/log/mysqld.2.err 2>/dev/null)
+                  /dev/shm/clonehang_*/log/mysqld.2.err 2>/dev/null || true)
         for f in $logs; do
           ends=$(grep -c 'MySQL Server - end\.' "$f")
           restarts=$(grep -c 'mysqld_safe mysqld restarted' "$f")
