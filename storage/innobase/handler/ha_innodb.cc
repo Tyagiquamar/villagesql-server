@@ -8719,6 +8719,9 @@ void ha_innobase::build_template(bool whole_row) {
   index = whole_row ? clust_index : m_prebuilt->index;
 
   m_prebuilt->need_to_access_clustered = (index == clust_index);
+  if (villagesql::innodb::Custom_index::needs_clustered_access(index)) {
+    m_prebuilt->need_to_access_clustered = true;
+  }
 
   /* Either m_prebuilt->index should be a secondary index, or it
   should be the clustered index. */

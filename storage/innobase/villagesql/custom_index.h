@@ -147,6 +147,9 @@ class Custom_index {
   // Returns true if index is a KNN custom index.
   static bool is_knn(const dict_index_t *index);
 
+  // Returns true if a scan on index must always read the clustered index.
+  static bool needs_clustered_access(const dict_index_t *index);
+
   static uint32_t n_extra_fields(const dict_index_t *index);
 
   static void add_extra_fields(dict_index_t *new_index,

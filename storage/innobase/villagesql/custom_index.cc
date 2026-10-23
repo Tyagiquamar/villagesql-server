@@ -15,6 +15,7 @@
  */
 #include "custom_index.h"
 
+#include <scope_guard.h>
 #include <sql_const.h>
 
 #include <array>
@@ -459,6 +460,12 @@ bool Custom_index::is_knn(const dict_index_t *index) {
   if (!is_custom(index)) return false;
   const Custom_index *custom_index = index->custom_index;
   return (flags(custom_index->index_meta().get()) & HA_SUPPORT_KNN) != 0;
+}
+
+bool Custom_index::needs_clustered_access(const dict_index_t *index) {
+  if (!is_custom(index)) return false;
+  const vef_index_cap_t caps = index->custom_index->interface().capabilities;
+  return (caps & VEF_INDEX_CAP_MVCC_VISIBILITY) == 0;
 }
 
 const vef_type_index_intf_t &Custom_index::interface() const {
@@ -1031,6 +1038,17 @@ static dberr_t check_and_lock(row_prebuilt_t *prebuilt, const rec_t *rec,
   return err;
 }
 
+// Returns an empty heap kept in the prebuilt, creating it on first use. The
+// heap is freed together with the prebuilt.
+static mem_heap_t *get_empty_heap(mem_heap_t **heap, ulint size) {
+  if (*heap == nullptr) {
+    *heap = mem_heap_create(size, UT_LOCATION_HERE);
+  } else {
+    mem_heap_empty(*heap);
+  }
+  return *heap;
+}
+
 // Reads the clustered index row identified by the primary key columns and
 // converts it to MySQL format into buf. For a locking read, the record is
 // locked instead of building an old version, provided entry_trx matches.
@@ -1057,7 +1075,7 @@ static dberr_t fetch_cluster_row(
     }
   }
 
-  mem_heap_t *heap = nullptr;
+  mem_heap_t *heap = get_empty_heap(&prebuilt->custom_offset_heap, 256);
   ulint offsets_[REC_OFFS_NORMAL_SIZE];
   rec_offs_init(offsets_);
   ulint *offsets = offsets_;
@@ -1121,7 +1139,6 @@ static dberr_t fetch_cluster_row(
   }
 
   mtr_commit(&mtr);
-  if (heap != nullptr) mem_heap_free(heap);
   return err;
 }
 
@@ -1162,9 +1179,9 @@ static void store_index_entry_to_mysql(
       }
     }
     // A covering scan only requests columns present in the index entry.
-    ut_a(col_data != nullptr);
+    ut_ad(col_data != nullptr);
 
-    if (col_data->data == nullptr) {
+    if (col_data == nullptr || col_data->data == nullptr) {
       ut_ad(templ->mysql_null_bit_mask);
       buf[templ->mysql_null_byte_offset] |= (byte)templ->mysql_null_bit_mask;
       memcpy(buf + templ->mysql_col_offset,
@@ -1197,16 +1214,15 @@ static void store_index_entry_to_mysql(
 // looking up the entry in the mapping B-tree of the index.
 // @param[in]  key_refs     column references of the entry returned by the
 //                          extension
-// @param[in]  heap         heap for the search tuple
 // @param[in]  btr_mtr      mini-transaction that latches the mapping B-tree
 //                          page. The caller must keep it active while it uses
 //                          pkey_columns, which point into that page.
 // @param[out] pkey_columns primary key columns of the row
 // @param[out] found        false if the mapping B-tree has no such entry
 static void fetch_pkey_from_mapping_btree(
-    const row_prebuilt_t *prebuilt,
+    row_prebuilt_t *prebuilt,
     const std::array<vef_storage_col_ref_t, MAX_REF_PARTS> &key_refs,
-    mem_heap_t *heap, mtr_t *btr_mtr,
+    mtr_t *btr_mtr,
     std::array<vef_storage_col_data_t, MAX_REF_PARTS> *pkey_columns,
     bool *found) {
   dict_index_t *index = prebuilt->index;
@@ -1219,6 +1235,7 @@ static void fetch_pkey_from_mapping_btree(
 
   // The mapping B-tree is unique on the column reference of the first key
   // column.
+  mem_heap_t *heap = get_empty_heap(&prebuilt->custom_pk_heap, 256);
   dtuple_t *tuple = dtuple_create(heap, 1);
   dict_index_copy_types(tuple, index, 1);
   dtuple_set_n_fields_cmp(tuple, 1);
@@ -1234,7 +1251,8 @@ static void fetch_pkey_from_mapping_btree(
 
   const rec_t *rec = pcur.get_rec();
   if (page_rec_is_user_rec(rec) && pcur.get_low_match() >= 1) {
-    mem_heap_t *offsets_heap = nullptr;
+    mem_heap_t *offsets_heap =
+        get_empty_heap(&prebuilt->custom_offset_heap, 256);
     ulint offsets_[REC_OFFS_NORMAL_SIZE];
     rec_offs_init(offsets_);
     const ulint *offsets = rec_get_offsets(
@@ -1253,7 +1271,6 @@ static void fetch_pkey_from_mapping_btree(
       }
     }
     *found = true;
-    if (offsets_heap != nullptr) mem_heap_free(offsets_heap);
   }
 }
 
@@ -1310,6 +1327,13 @@ dberr_t Custom_index::row_search(byte *buf, page_cur_mode_t mode,
                                  row_prebuilt_t *prebuilt, ulint match_mode,
                                  ulint direction, bool range_lock,
                                  bool scan_forward, bool is_mvcc) {
+  que_thr_t *thr = que_fork_get_first_thr(prebuilt->sel_graph);
+  trx_t *trx = prebuilt->trx;
+  bool lock_failed = false;
+  auto thr_guard = create_scope_guard([&]() {
+    if (is_mvcc && !lock_failed) que_thr_stop_for_mysql_no_error(thr, trx);
+  });
+
   dberr_t cond_err =
       check_row_search_conditions(prebuilt, match_mode, range_lock, is_mvcc);
   if (cond_err != DB_SUCCESS) return cond_err;
@@ -1329,7 +1353,6 @@ dberr_t Custom_index::row_search(byte *buf, page_cur_mode_t mode,
   // PHASE 3, 4 nd 5 of row_search_mvcc. We cannot reuse the code directly
   // because it depends on the B-tree record format.
 
-  que_thr_t *thr = que_fork_get_first_thr(prebuilt->sel_graph);
   dict_index_t *index = prebuilt->index;
 
   ut_ad(Custom_index::is_custom(index));
@@ -1340,7 +1363,6 @@ dberr_t Custom_index::row_search(byte *buf, page_cur_mode_t mode,
   ut_ad(!dict_index_is_spatial(index));
 
   dtuple_t *search_tuple = prebuilt->search_tuple;
-  trx_t *trx = prebuilt->trx;
 
   // PHASE 3: Open or restore index cursor position
   Mtr_guard mtr_guard;
@@ -1385,8 +1407,6 @@ dberr_t Custom_index::row_search(byte *buf, page_cur_mode_t mode,
 
   // The restored cursor sits on the row returned by the previous call.
   bool advance = direction != 0;
-  bool lock_failed = false;
-  mem_heap_t *pkey_heap = nullptr;
 
   for (;;) {
     // PHASE 5: Move the cursor to the next index record
@@ -1431,17 +1451,28 @@ dberr_t Custom_index::row_search(byte *buf, page_cur_mode_t mode,
     if ((intf.storage_props & VEF_INDEX_STORAGE_HAS_ROW_REF) == 0) {
       ut_ad((intf.storage_props & VEF_INDEX_STORAGE_HAS_COLUMN_REF) != 0);
       // Get primary Keys from col_ref using B-tree mapping index.
-      if (pkey_heap == nullptr) {
-        pkey_heap = mem_heap_create(256, UT_LOCATION_HERE);
-      } else {
-        mem_heap_empty(pkey_heap);
-      }
       bool mapped = false;
-      fetch_pkey_from_mapping_btree(prebuilt, key_column_refs, pkey_heap,
+      fetch_pkey_from_mapping_btree(prebuilt, key_column_refs,
                                     btr_mtr_guard.get(), &pkey_columns,
                                     &mapped);
       // The entry was purged from the mapping B-tree after the scan read it.
       if (!mapped) continue;
+    }
+
+    // Column references are handed back as they are stored in the index
+    // entry, in the big-endian format of the reference field.
+    std::array<std::array<byte, sizeof(vef_storage_col_ref_t)>, MAX_REF_PARTS>
+        key_ref_data;
+    if (intf.storage_props & VEF_INDEX_STORAGE_HAS_COLUMN_REF) {
+      for (uint32_t i = 0; i < index_ctx->num_key_columns; i++) {
+        if (key_column_refs[i] == VEF_STORAGE_EMPTY_COLUMN_REF) {
+          key_columns[i] = {nullptr, 0};
+          continue;
+        }
+        auto &ref_data = key_ref_data[i];
+        mach_write_to_8(ref_data.data(), key_column_refs[i]);
+        key_columns[i] = {ref_data.data(), sizeof(vef_storage_col_ref_t)};
+      }
     }
 
     if (prebuilt->need_to_access_clustered) {
@@ -1496,10 +1527,6 @@ dberr_t Custom_index::row_search(byte *buf, page_cur_mode_t mode,
 
     if (record_found) break;
   }
-
-  if (pkey_heap != nullptr) mem_heap_free(pkey_heap);
-
-  if (!lock_failed) que_thr_stop_for_mysql_no_error(thr, trx);
 
   if (eof || err != DB_SUCCESS) {
     // Check if we need to support scrollable cursor that could go back
