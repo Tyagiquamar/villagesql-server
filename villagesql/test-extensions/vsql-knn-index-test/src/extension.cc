@@ -516,8 +516,8 @@ static bool kvec_begin(IdxCtx *ctx, const Index &index, MtrCtx::Ref /*mctx*/,
   }
   const IndexScanKey scan_key = scan_desc[0];
   if (scan_key.profile_function_id() != kDistanceFunctionFnId ||
-      scan_key.num_columns() != 1 ||
-      !scan_key.is_bounded() || scan_key[0].data == nullptr) {
+      scan_key.num_columns() != 1 || !scan_key.is_bounded() ||
+      scan_key[0].data == nullptr) {
     snprintf(err, err_len, "kvec_l2: bad KNN query key");
     return true;
   }
@@ -816,14 +816,15 @@ static constexpr auto KVEC_L2_HELPER_FN =
         .deterministic()
         .build();
 
-static const auto KVEC_L2_PROFILE = make_index_profile(kKVecProfileL2)
-                                        .for_type(kKVectorType)
-                                        .using_index(kKVecIndexL2)
-                                        .with_function<KVEC_L2_FN>(1, FunctionKind::Order)
-                                        .with_helper<KVEC_L2_HELPER_FN>(1)
-                                        .ordering(Index::Ordering::ASC)
-                                        .default_for_type(true)
-                                        .build();
+static const auto KVEC_L2_PROFILE =
+    make_index_profile(kKVecProfileL2)
+        .for_type(kKVectorType)
+        .using_index(kKVecIndexL2)
+        .with_function<KVEC_L2_FN>(1, FunctionKind::Order)
+        .with_helper<KVEC_L2_HELPER_FN>(1)
+        .ordering(Index::Ordering::ASC)
+        .default_for_type(true)
+        .build();
 
 // Cosine metric, bound to the kvec_cos index (NOT kvec_l2). Not
 // default_for_type -- a type may have only one default profile, and L2 owns it.
@@ -858,13 +859,14 @@ static constexpr auto KVEC_COS_HELPER_FN =
         .deterministic()
         .build();
 
-static const auto KVEC_COS_PROFILE = make_index_profile(kKVecProfileCos)
-                                         .for_type(kKVectorType)
-                                         .using_index(kKVecIndexCos)
-                                         .with_function<KVEC_COS_FN>(1, FunctionKind::Order)
-                                         .with_helper<KVEC_COS_HELPER_FN>(1)
-                                         .ordering(Index::Ordering::ASC)
-                                         .build();
+static const auto KVEC_COS_PROFILE =
+    make_index_profile(kKVecProfileCos)
+        .for_type(kKVectorType)
+        .using_index(kKVecIndexCos)
+        .with_function<KVEC_COS_FN>(1, FunctionKind::Order)
+        .with_helper<KVEC_COS_HELPER_FN>(1)
+        .ordering(Index::Ordering::ASC)
+        .build();
 
 // ============================================================================
 // Extension entry point
