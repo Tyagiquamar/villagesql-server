@@ -1,0 +1,96 @@
+# Copyright (c) 2026 VillageSQL Contributors
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, see <https://www.gnu.org/licenses/>.
+
+# Build vanilla Oracle MySQL 8.4.11 (release) on the standard self-hosted
+# Linux runner and run gis.st_symdifference, to see whether the failure we
+# get there also happens without VillageSQL's changes.
+name: Vanilla MySQL gis.st_symdifference
+
+on:
+  push:
+    branches: [ test/vanilla-8.4.11-st-symdifference ]
+
+jobs:
+  st-symdifference:
+    name: Vanilla 8.4.11 gis.st_symdifference
+    runs-on: [self-hosted, linux, x86_64]
+    permissions:
+      actions: write  # Required to read/write caches
+      contents: read
+
+    env:
+      MYSQL_REF: mysql-8.4.11
+      MYSQL_DIR: ${{ github.workspace }}/mysql-server
+      BUILD_DIR: ${{ github.workspace }}/build
+
+    steps:
+    # Our repo is checked out as ./source because the setup action expects it there.
+    - name: Checkout VillageSQL (for build setup)
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      with:
+        path: source
+
+    - name: Checkout vanilla MySQL
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      with:
+        repository: mysql/mysql-server
+        ref: ${{ env.MYSQL_REF }}
+        fetch-depth: 1
+        path: mysql-server
+
+    - name: Setup build environment
+      uses: ./source/.github/actions/setup-villagesql-build
+      with:
+        cache-key-prefix: vanilla-8.4.11
+
+    - name: Configure
+      run: |
+        mkdir -p "$BUILD_DIR"
+        cmake -S "$MYSQL_DIR" -B "$BUILD_DIR" \
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          -DWITH_DEBUG=0 \
+          -DWITH_SSL=system \
+          -DWITH_UNIT_TESTS=OFF \
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+    - name: Build
+      run: cmake --build "$BUILD_DIR" -j"$(getconf _NPROCESSORS_ONLN)"
+
+    - name: Show ccache statistics
+      run: ccache -s
+
+    - name: Run gis.st_symdifference
+      working-directory: ${{ env.BUILD_DIR }}/mysql-test
+      run: |
+        ./mysql-test-run.pl gis.st_symdifference \
+          --force \
+          --xml-report="$BUILD_DIR/mysql-test-report.xml" \
+          2>&1 | tee "$BUILD_DIR/mtr-output.txt"
+        exit "${PIPESTATUS[0]}"
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: vanilla-8.4.11-st-symdifference
+        path: |
+          ${{ env.BUILD_DIR }}/mtr-output.txt
+          ${{ env.BUILD_DIR }}/mysql-test-report.xml
+          ${{ env.BUILD_DIR }}/mysql-test/var/log/
+          ${{ env.MYSQL_DIR }}/mysql-test/suite/gis/r/st_symdifference.reject
+          ${{ env.BUILD_DIR }}/CMakeCache.txt
+        if-no-files-found: warn
+        retention-days: 14
