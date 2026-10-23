@@ -19,8 +19,7 @@
 name: Vanilla MySQL gis.st_symdifference
 
 on:
-  push:
-    branches: [ test/vanilla-8.4.11-st-symdifference ]
+  workflow_dispatch:
 
 jobs:
   st-symdifference:
