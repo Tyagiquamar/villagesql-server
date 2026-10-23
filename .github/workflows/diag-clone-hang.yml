@@ -1,0 +1,164 @@
+# Copyright (c) 2026 VillageSQL Contributors
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, see <https://www.gnu.org/licenses/>.
+
+# Temporary diagnostic, not for merging. Reproduces the hang of
+# villagesql/clone.clone_preserves_schema in the ASan+UBSan job (sanitizer.yml)
+# on the same runners, with a watcher that captures /proc state and gdb
+# backtraces of a hung recipient.
+#
+# Runs on push to its branch: workflow_dispatch only works for workflows on the
+# default branch. Change the env knobs below and push again to vary a run.
+name: Diagnose clone_preserves_schema sanitizer hang
+
+on:
+  push:
+    branches:
+      - diag/clone-hang-sanitizer
+
+jobs:
+  diagnose:
+    name: clone_preserves_schema hang capture
+    runs-on: [self-hosted, linux, x86_64]
+    timeout-minutes: 600
+    permissions:
+      contents: read
+
+    env:
+      SOURCE_DIR: ${{ github.workspace }}/source
+      BUILD_DIR: ${{ github.workspace }}/build
+      HANG_DIR: ${{ github.workspace }}/hang
+      # suite:  the whole village suite exactly as sanitizer.yml runs it.
+      # repeat: INSTANCES concurrent mtr runs of the one test, REPEAT times each.
+      MODE: suite
+      INSTANCES: 8
+      REPEAT: 20
+      # Seconds of silence after "MySQL Server - end." that count as a hang.
+      STALE_SECONDS: 30
+      # After capturing, SIGKILL the hung mysqld so the test can continue.
+      KILL_AFTER_CAPTURE: yes
+      # Appended to the LSAN_OPTIONS mtr sets. log_threads=1 makes the exit-time
+      # leak check log each thread it scans to stderr (mysqld.N.err), so a log
+      # that stops mid-check points at LSan. For the A/B run, use
+      # ",detect_leaks=0" instead. Empty leaves mtr unchanged.
+      LSAN_OPTIONS_APPEND: ',log_threads=1'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      with:
+        path: source
+
+    - name: Setup VillageSQL build environment
+      uses: ./source/.github/actions/setup-villagesql-build
+      with:
+        # Same as sanitizer.yml: keep the sanitizer build out of the shared cache.
+        setup-ccache: 'false'
+
+    - name: Build VillageSQL with ASan+UBSan
+      env:
+        BUILD_TYPE: debug
+        CMAKE_EXTRA_FLAGS: -DWITH_ASAN=1 -DWITH_UBSAN=1
+      run: source/villagesql/bld_tools/build_ci.sh
+
+    - name: Install gdb
+      run: command -v gdb || sudo apt-get install -y gdb
+
+    - name: Append to LSAN_OPTIONS
+      if: env.LSAN_OPTIONS_APPEND != ''
+      run: |
+        mtr="$BUILD_DIR/mysql-test/mysql-test-run.pl"
+        sed -i --follow-symlinks \
+          "s|\",print_suppressions=0\"|\",print_suppressions=0${LSAN_OPTIONS_APPEND}\"|" "$mtr"
+        grep -n -A1 'print_suppressions=0' "$mtr"
+        grep -q "print_suppressions=0${LSAN_OPTIONS_APPEND}" "$mtr"
+
+    - name: Run mtr with hang watcher
+      working-directory: ${{ env.BUILD_DIR }}
+      run: |
+        mkdir -p "$HANG_DIR"
+        bash "$SOURCE_DIR/.github/scripts/clone_hang_watch.sh" \
+          "$HANG_DIR" "$STALE_SECONDS" "$KILL_AFTER_CAPTURE" \
+          > "$HANG_DIR/watch.log" 2>&1 &
+        watcher=$!
+
+        set +e
+        if [ "$MODE" = suite ]; then
+          ./mysql-test/mysql-test-run.pl --mem --report-unstable-tests \
+            --parallel=auto --nounit-tests --force --max-test-fail=0 \
+            --do-suite=village --sanitize \
+            --xml-report="$BUILD_DIR/mysql-test-report.xml" \
+            > "$HANG_DIR/mtr.txt" 2>&1
+          rc=$?
+        else
+          # --mem can't be combined with --vardir, so put each vardir in
+          # /dev/shm directly. Build threads 3 apart keep port ranges apart.
+          pids=()
+          for i in $(seq 1 "$INSTANCES"); do
+            ./mysql-test/mysql-test-run.pl --sanitize --retry=0 --force \
+              --repeat="$REPEAT" \
+              --vardir="/dev/shm/clonehang_$i" \
+              --build-thread=$((200 + i * 3)) \
+              villagesql/clone.clone_preserves_schema \
+              > "$HANG_DIR/mtr_$i.txt" 2>&1 &
+            pids+=($!)
+          done
+          rc=0
+          for p in "${pids[@]}"; do
+            wait "$p" || rc=1
+          done
+        fi
+
+        kill "$watcher"
+        cat "$HANG_DIR/watch.log"
+        tail -n 40 "$HANG_DIR"/mtr*.txt
+        exit "$rc"
+
+    - name: Summarize restarts
+      if: always()
+      run: |
+        logs=$(ls "$BUILD_DIR"/mysql-test/var/*/log/mysqld.2.err \
+                  /dev/shm/clonehang_*/log/mysqld.2.err 2>/dev/null)
+        for f in $logs; do
+          ends=$(grep -c 'MySQL Server - end\.' "$f")
+          restarts=$(grep -c 'mysqld_safe mysqld restarted' "$f")
+          echo "$f: end=$ends mysqld_safe-restarted=$restarts"
+        done | tee "$HANG_DIR/restart_counts.txt"
+
+    - name: Copy repeat-mode logs out of /dev/shm
+      if: always() && env.MODE == 'repeat'
+      run: |
+        for d in /dev/shm/clonehang_*; do
+          [ -d "$d/log" ] && cp -r "$d/log" "$HANG_DIR/$(basename "$d")_log"
+        done
+
+    - name: Clean up leftover servers
+      if: always()
+      run: |
+        pkill -9 -f "mysqld_safe.*$BUILD_DIR" || true
+        pkill -9 -f "$BUILD_DIR/runtime_output_directory/mysqld" || true
+        rm -rf /dev/shm/clonehang_*
+
+    - name: Upload captures and logs
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: clone-hang-diag-${{ github.run_number }}
+        path: |
+          ${{ env.HANG_DIR }}/
+          ${{ env.BUILD_DIR }}/mysql-test-report.xml
+          ${{ env.BUILD_DIR }}/mysql-test/var/log/
+          ${{ env.BUILD_DIR }}/mysql-test/var/*/log/
+        if-no-files-found: warn
+        retention-days: 14
