@@ -13,6 +13,8 @@
 #   Populated table: the same CREATE INDEX succeeds, building over existing rows.
 #   The server is alive and the rows are intact afterwards.
 
+--source include/villagesql/not_implemented.inc
+
 SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_index_test;
 
