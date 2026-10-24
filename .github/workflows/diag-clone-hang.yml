@@ -31,7 +31,8 @@ jobs:
   diagnose:
     name: clone_preserves_schema hang capture
     runs-on: [self-hosted, linux, x86_64]
-    timeout-minutes: 600
+    # Build (~30 min) + TEST_BUDGET_MINUTES + slack for capture and upload.
+    timeout-minutes: 720
     permissions:
       contents: read
 
@@ -40,10 +41,13 @@ jobs:
       BUILD_DIR: ${{ github.workspace }}/build
       HANG_DIR: ${{ github.workspace }}/hang
       # suite:  the whole village suite exactly as sanitizer.yml runs it.
-      # repeat: INSTANCES concurrent mtr runs of the one test, REPEAT times each.
+      # repeat: INSTANCES concurrent loops of the one test. Each loop runs mtr
+      #         --repeat=REPEAT rounds until the watcher captures a hang, an mtr
+      #         run fails, or TEST_BUDGET_MINUTES runs out.
       MODE: repeat
-      INSTANCES: 8
-      REPEAT: 20
+      INSTANCES: 32
+      REPEAT: 5
+      TEST_BUDGET_MINUTES: 600
       # Seconds of silence after "MySQL Server - end." that count as a hang.
       STALE_SECONDS: 30
       # After capturing, SIGKILL the hung mysqld so the test can continue.
@@ -52,7 +56,7 @@ jobs:
       # leak check log each thread it scans to stderr (mysqld.N.err), so a log
       # that stops mid-check points at LSan. For the A/B run, use
       # ",detect_leaks=0" instead. Empty leaves mtr unchanged.
-      LSAN_OPTIONS_APPEND: ',log_threads=1'
+      LSAN_OPTIONS_APPEND: ''
 
     steps:
     - name: Checkout code
@@ -104,21 +108,48 @@ jobs:
           rc=$?
         else
           # --mem can't be combined with --vardir, so put each vardir in
-          # /dev/shm directly. Build threads 3 apart keep port ranges apart.
+          # /dev/shm directly, as --mem would. Build threads 3 apart keep port
+          # ranges apart. The watcher creates $HANG_DIR/stop when it captures
+          # a hang; a failed mtr run creates it too.
+          stop="$HANG_DIR/stop"
+          deadline=$(( $(date +%s) + TEST_BUDGET_MINUTES * 60 ))
+          run_instance() {
+            local i="$1" round=0 err
+            while [ ! -f "$stop" ] && [ "$(date +%s)" -lt "$deadline" ]; do
+              round=$((round + 1))
+              echo "=== round $round $(date -u +%T)" >> "$HANG_DIR/mtr_$i.txt"
+              ./mysql-test/mysql-test-run.pl --sanitize --retry=0 --force \
+                --repeat="$REPEAT" \
+                --vardir="/dev/shm/clonehang_$i" \
+                --build-thread=$((200 + i * 3)) \
+                villagesql/clone.clone_preserves_schema \
+                >> "$HANG_DIR/mtr_$i.txt" 2>&1
+              local rc=$?
+              # mtr wipes the vardir on the next round, so tally this one now.
+              err="/dev/shm/clonehang_$i/log/mysqld.2.err"
+              echo "instance $i round $round rc=$rc" \
+                "end=$(grep -c 'MySQL Server - end\.' "$err" 2>/dev/null)" \
+                "restarted=$(grep -c 'mysqld_safe mysqld restarted' "$err" 2>/dev/null)" \
+                >> "$HANG_DIR/restart_tally.txt"
+              if [ "$rc" -ne 0 ]; then
+                echo "instance $i round $round failed rc=$rc $(date -u +%T)" \
+                  >> "$HANG_DIR/failures.txt"
+                touch "$stop"
+              fi
+            done
+          }
           pids=()
           for i in $(seq 1 "$INSTANCES"); do
-            ./mysql-test/mysql-test-run.pl --sanitize --retry=0 --force \
-              --repeat="$REPEAT" \
-              --vardir="/dev/shm/clonehang_$i" \
-              --build-thread=$((200 + i * 3)) \
-              villagesql/clone.clone_preserves_schema \
-              > "$HANG_DIR/mtr_$i.txt" 2>&1 &
+            run_instance "$i" &
             pids+=($!)
           done
+          wait "${pids[@]}"
           rc=0
-          for p in "${pids[@]}"; do
-            wait "$p" || rc=1
-          done
+          [ -f "$HANG_DIR/failures.txt" ] && rc=1
+          grep -q -E '^(HANG|MYSQLD_SAFE GONE)' "$HANG_DIR/watch.log" && rc=1
+          awk '{for (f = 5; f <= NF; f++) { split($f, kv, "="); t[kv[1]] += kv[2] }}
+               END { printf "TOTAL rounds=%d end=%d restarted=%d\n", NR, t["end"], t["restarted"] }' \
+            "$HANG_DIR/restart_tally.txt" | tee "$HANG_DIR/restart_total.txt"
         fi
 
         kill "$watcher"

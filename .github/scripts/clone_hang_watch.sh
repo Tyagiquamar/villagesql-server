@@ -101,7 +101,7 @@ snapshot() {
 echo "watcher started $(date -u +%T), stale=${stale}s kill_after=$kill_after"
 while true; do
   for safe in $(pgrep -f '[m]ysqld_safe'); do
-    args=$(tr '\0' ' ' < "/proc/$safe/cmdline" 2>/dev/null) || continue
+    args=$(tr '\0' ' ' 2>/dev/null < "/proc/$safe/cmdline") || continue
     log=$(arg_of log-error "$args")
     pidfile=$(arg_of pid-file "$args")
     [ -f "$log" ] || continue
@@ -113,11 +113,21 @@ while true; do
     seen[$key]=1
 
     tag="hang_$(date -u +%H%M%S)_$safe"
-    echo "HANG $tag: log=$log quiet ${age}s"
+    echo "SUSPECT $tag: log=$log quiet ${age}s"
+    size=$(stat -c %s "$log")
     cp "$log" "$out/$tag.err_at_detect"
     snapshot "$safe" "$out/$tag/a" "$pidfile"
     sleep "$stale"
     snapshot "$safe" "$out/$tag/b" "$pidfile"
+
+    # A slow but healthy restart moves the log on by now; keep its snapshots
+    # but don't stop the run for it.
+    if [ "$(stat -c %s "$log" 2>/dev/null)" != "$size" ]; then
+      echo "SLOW $tag: log moved on, not a hang"
+      cp "$log" "$out/$tag.err_moved_on"
+      continue
+    fi
+    echo "HANG $tag: no progress after a further ${stale}s"
 
     if [ "$kill_after" = yes ]; then
       kids=$(printf '%s\n' $(pgrep -P "$safe") \
@@ -129,6 +139,8 @@ while true; do
       cp "$log" "$out/$tag.err_after_kill"
     fi
     echo "  captured $tag"
+    # Tells a looping workflow to stop starting new rounds.
+    touch "$out/stop"
   done
 
   # The other explanation: mysqld_safe itself went away silently. Its
@@ -144,11 +156,12 @@ while true; do
       echo "MYSQLD_SAFE GONE $tag: log=$log"
       cp "$log" "$out/$tag.err"
       ps -eo pid,ppid,pgid,stat,wchan:32,etime,args --forest > "$out/$tag.ps.txt"
+      touch "$out/stop"
     fi
   done
   for safe in $(pgrep -f '[m]ysqld_safe'); do
     [ -n "${safe_log[$safe]}" ] && continue
-    log=$(arg_of log-error "$(tr '\0' ' ' < "/proc/$safe/cmdline" 2>/dev/null)")
+    log=$(arg_of log-error "$(tr '\0' ' ' 2>/dev/null < "/proc/$safe/cmdline")")
     [ -n "$log" ] && safe_log[$safe]="$log"
   done
   sleep 5
