@@ -25,7 +25,7 @@ name: Diagnose clone_preserves_schema sanitizer hang
 on:
   push:
     branches:
-      - diag/clone-hang-sanitizer
+      - leeca/diag-clone-hang-sanitizer
 
 jobs:
   diagnose:
